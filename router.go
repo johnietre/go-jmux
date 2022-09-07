@@ -16,10 +16,9 @@ type contextKeyType string
 
 const ParamsKey contextKeyType = "jmuxkey"
 
-// TODO: Change to "HandlerFunc"
-type HandleFunc func(*Context)
+type HandlerFunc func(*Context)
 
-func WrapH(h http.Handler) HandleFunc {
+func WrapH(h http.Handler) HandlerFunc {
   return func(c *Context) {
     r := c.Request.WithContext(
       context.WithValue(c.Request.Context(), ParamsKey, c.Params),
@@ -28,7 +27,7 @@ func WrapH(h http.Handler) HandleFunc {
   }
 }
 
-func WrapF(f func(http.ResponseWriter, *http.Request)) HandleFunc {
+func WrapF(f func(http.ResponseWriter, *http.Request)) HandlerFunc {
   return func(c *Context) {
     r := c.Request.WithContext(
       context.WithValue(c.Request.Context(), ParamsKey, c.Params),
@@ -42,10 +41,10 @@ type Route struct {
   param bool
   methods Methods
   routes map[string]*Route
-  handlers map[string]HandleFunc
+  handlers map[string]HandlerFunc
 }
 
-func (route *Route) getHandler(method string) HandleFunc {
+func (route *Route) getHandler(method string) HandlerFunc {
   f := route.handlers[method]
   if f == nil {
     f = route.handlers["*"]
@@ -53,7 +52,7 @@ func (route *Route) getHandler(method string) HandleFunc {
   return f
 }
 
-func (route *Route) handleFunc(pattern string, methods Methods, f HandleFunc) {
+func (route *Route) handleFunc(pattern string, methods Methods, f HandlerFunc) {
   if pattern == "" {
     for method := range methods {
       route.handlers[method] = f
@@ -79,7 +78,7 @@ func (route *Route) handleFunc(pattern string, methods Methods, f HandleFunc) {
       param: param,
       methods: CopyMethods(methods),
       routes: make(map[string]*Route),
-      handlers: make(map[string]HandleFunc),
+      handlers: make(map[string]HandlerFunc),
     }
     route.routes[slug] = r
   } else {
@@ -94,8 +93,8 @@ func (route *Route) handleFunc(pattern string, methods Methods, f HandleFunc) {
 
 type Router struct {
   base *Route
-  // map[method]HandleFunc
-  defaultHandlers map[string]HandleFunc
+  // map[method]HandlerFunc
+  defaultHandlers map[string]HandlerFunc
 }
 
 func NewRouter() *Router {
@@ -104,13 +103,13 @@ func NewRouter() *Router {
     base: &Route{
       methods: make(Methods),
       routes: make(map[string]*Route),
-      handlers: make(map[string]HandleFunc),
+      handlers: make(map[string]HandlerFunc),
     },
-    defaultHandlers: make(map[string]HandleFunc),
+    defaultHandlers: make(map[string]HandlerFunc),
   }
 }
 
-func (router *Router) HandleFunc(pattern string, methods Methods, f HandleFunc) {
+func (router *Router) HandleFunc(pattern string, methods Methods, f HandlerFunc) {
   if pattern == "" {
     return
   } else if pattern == "/" {
@@ -130,27 +129,27 @@ func (router *Router) HandleFunc(pattern string, methods Methods, f HandleFunc) 
   router.base.handleFunc(pattern, methods, f)
 }
 
-func (router *Router) Get(pattern string, f HandleFunc) {
+func (router *Router) Get(pattern string, f HandlerFunc) {
   router.HandleFunc(pattern, MethodsGet(), f)
 }
 
-func (router *Router) Post(pattern string, f HandleFunc) {
+func (router *Router) Post(pattern string, f HandlerFunc) {
   router.HandleFunc(pattern, MethodsPost(), f)
 }
 
-func (router *Router) Put(pattern string, f HandleFunc) {
+func (router *Router) Put(pattern string, f HandlerFunc) {
   router.HandleFunc(pattern, MethodsPut(), f)
 }
 
-func (router *Router) Delete(pattern string, f HandleFunc) {
+func (router *Router) Delete(pattern string, f HandlerFunc) {
   router.HandleFunc(pattern, MethodsDelete(), f)
 }
 
-func (router *Router) All(pattern string, f HandleFunc) {
+func (router *Router) All(pattern string, f HandlerFunc) {
   router.HandleFunc(pattern, MethodsAll(), f)
 }
 
-func (router *Router) Default(methods Methods, f HandleFunc) {
+func (router *Router) Default(methods Methods, f HandlerFunc) {
   for method := range methods {
     router.defaultHandlers[method] = f
   }
