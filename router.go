@@ -31,6 +31,10 @@ func WrapF(f func(http.ResponseWriter, *http.Request)) HandlerFunc {
   }
 }
 
+func (h HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+  h(newContext(w, r, make(map[string]string)))
+}
+
 type Route struct {
   name string
   param bool
