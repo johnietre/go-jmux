@@ -1,10 +1,5 @@
 package jmux
 
-/* TODO
- * Apply methods only for endpoints, rather than all parent routes in the path
- * Add way to allow only exact path matches (/a/b/c doesn't match /a/b or /)
- */
-
 import (
   "context"
   "encoding/json"
@@ -40,24 +35,61 @@ type Route struct {
   name string
   param bool
   methods Methods
+  // Used to match child routes that failed to match
+  matchAny map[string]HandlerFunc
   routes map[string]*Route
   handlers map[string]HandlerFunc
+  parent *Route
+}
+
+func (route *Route) MatchAny(methods Methods) {
+  route.HandleAny(methods, nil)
+}
+
+func (route *Route) HandleAny(methods Methods, f HandlerFunc) {
+  for method := range methods {
+    route.matchAny[method] = f
+  }
 }
 
 func (route *Route) getHandler(method string) HandlerFunc {
   f := route.handlers[method]
   if f == nil {
-    f = route.handlers["*"]
+    return route.handlers["*"]
   }
   return f
 }
 
-func (route *Route) handleFunc(pattern string, methods Methods, f HandlerFunc) {
+func (route *Route) getMatchAnyHandler(method string) HandlerFunc {
+  f, ok := route.matchAny[method]
+  if ok && f != nil {
+    return f
+  }
+  f, okAll := route.matchAny["*"]
+  if okAll && f != nil {
+    return f
+  }
+  if !ok && !okAll {
+    return nil
+  }
+  return route.getHandler(method)
+}
+
+func (route *Route) getParentMatch(method string) HandlerFunc {
+  for ; route != nil; route = route.parent {
+    if handler := route.getMatchAnyHandler(method); handler != nil {
+      return handler
+    }
+  }
+  return nil
+}
+
+func (route *Route) handleFunc(pattern string, methods Methods, f HandlerFunc) *Route {
   if pattern == "" {
     for method := range methods {
       route.handlers[method] = f
     }
-    return
+    return route
   }
   l := nextSlug(pattern)
   if l == -1 {
@@ -77,18 +109,19 @@ func (route *Route) handleFunc(pattern string, methods Methods, f HandlerFunc) {
       name: slug,
       param: param,
       methods: CopyMethods(methods),
+      matchAny: make(map[string]HandlerFunc),
       routes: make(map[string]*Route),
       handlers: make(map[string]HandlerFunc),
+      parent: route,
     }
     route.routes[slug] = r
   } else {
     r.methods.CopyFrom(methods)
   }
   if l == len(pattern) {
-    r.handleFunc("", methods, f)
-    return // TODO
+    return r.handleFunc("", methods, f)
   }
-  r.handleFunc(pattern[l+1:], methods, f)
+  return r.handleFunc(pattern[l+1:], methods, f)
 }
 
 type Router struct {
@@ -98,10 +131,10 @@ type Router struct {
 }
 
 func NewRouter() *Router {
-  // TODO: Name base (i.e., add base as global)?
   return &Router{
     base: &Route{
       methods: make(Methods),
+      matchAny: make(map[string]HandlerFunc),
       routes: make(map[string]*Route),
       handlers: make(map[string]HandlerFunc),
     },
@@ -109,16 +142,15 @@ func NewRouter() *Router {
   }
 }
 
-func (router *Router) HandleFunc(pattern string, methods Methods, f HandlerFunc) {
+func (router *Router) HandleFunc(pattern string, methods Methods, f HandlerFunc) *Route {
   if pattern == "" {
-    return
+    return nil
   } else if pattern == "/" {
-    // TODO: Set base name
     for method := range methods {
       router.base.handlers[method] = f
     }
     router.base.methods.CopyFrom(methods)
-    return
+    return router.base
   }
   if pattern[0] == '/' {
     pattern = pattern[1:]
@@ -126,33 +158,41 @@ func (router *Router) HandleFunc(pattern string, methods Methods, f HandlerFunc)
   if l1 := len(pattern) - 1; pattern[l1] == '/' {
     pattern = pattern[:l1]
   }
-  router.base.handleFunc(pattern, methods, f)
+  return router.base.handleFunc(pattern, methods, f)
 }
 
-func (router *Router) Get(pattern string, f HandlerFunc) {
-  router.HandleFunc(pattern, MethodsGet(), f)
+func (router *Router) Get(pattern string, f HandlerFunc) *Route {
+  return router.HandleFunc(pattern, MethodsGet(), f)
 }
 
-func (router *Router) Post(pattern string, f HandlerFunc) {
-  router.HandleFunc(pattern, MethodsPost(), f)
+func (router *Router) Post(pattern string, f HandlerFunc) *Route {
+  return router.HandleFunc(pattern, MethodsPost(), f)
 }
 
-func (router *Router) Put(pattern string, f HandlerFunc) {
-  router.HandleFunc(pattern, MethodsPut(), f)
+func (router *Router) Put(pattern string, f HandlerFunc) *Route {
+  return router.HandleFunc(pattern, MethodsPut(), f)
 }
 
-func (router *Router) Delete(pattern string, f HandlerFunc) {
-  router.HandleFunc(pattern, MethodsDelete(), f)
+func (router *Router) Delete(pattern string, f HandlerFunc) *Route {
+  return router.HandleFunc(pattern, MethodsDelete(), f)
 }
 
-func (router *Router) All(pattern string, f HandlerFunc) {
-  router.HandleFunc(pattern, MethodsAll(), f)
+func (router *Router) All(pattern string, f HandlerFunc) *Route {
+  return router.HandleFunc(pattern, MethodsAll(), f)
 }
 
 func (router *Router) Default(methods Methods, f HandlerFunc) {
   for method := range methods {
     router.defaultHandlers[method] = f
   }
+}
+
+func (router *Router) getDefaultHandler(method string) HandlerFunc {
+  f := router.defaultHandlers[method]
+  if f == nil {
+    return router.defaultHandlers["*"]
+  }
+  return f
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -173,20 +213,22 @@ pathLoop:
     }
     ro := route.routes[slug]
     if ro == nil {
-      for _, route = range route.routes {
+      for _, route := range route.routes {
         if route.param && route.methods.HasOrAll(r.Method) {
           params[route.name] = slug
           continue pathLoop
         }
       }
-      //router.serveDefault(w, r)
-      //return
-      break
+      if handler := route.getParentMatch(r.Method); handler != nil {
+        handler(newContext(w, r, params))
+        return
+      }
+      router.serveDefault(w, r)
+      return
     }
     route = ro
     if !route.methods.HasOrAll(r.Method) {
-      router.serveDefault(w, r)
-      return
+      break
     }
     if route.param {
       params[route.name] = slug
@@ -196,6 +238,10 @@ pathLoop:
   // True if the route doesn't have an associated handler (not an endpoint)
   handler := route.getHandler(r.Method)
   if handler == nil {
+    if handler := route.getParentMatch(r.Method); handler != nil {
+      handler(newContext(w, r, params))
+      return
+    }
     router.serveDefault(w, r)
     return
   }
@@ -203,9 +249,8 @@ pathLoop:
 }
 
 func (router *Router) serveDefault(w http.ResponseWriter, r *http.Request) {
-  handler := router.defaultHandlers[r.Method]
+  handler := router.getDefaultHandler(r.Method)
   if handler == nil {
-    // TODO: Return different status?
     w.WriteHeader(http.StatusNotFound)
     return
   }
