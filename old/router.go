@@ -79,9 +79,29 @@ func (route *Route) getMatchAnyHandler(method string) HandlerFunc {
   return route.getHandler(method)
 }
 
-func (route *Route) getParentMatch(method string) HandlerFunc {
+//func (route *Route) getParentMatch(method string) HandlerFunc {
+func (route *Route) getParentMatch(r *http.Request, params map[string]string) HandlerFunc {
   for ; route != nil; route = route.parent {
-    if handler := route.getMatchAnyHandler(method); handler != nil {
+    for name, ro := range route.routes {
+      if ro.param {
+        if handler := ro.getMatchAnyHandler(r.Method); handler != nil {
+          // Add the param value to params
+          i := 0
+          for ro = ro.parent; ro != nil; ro = ro.parent {
+            i++
+          }
+          if slugs := strings.Split(r.URL.Path, "/"); len(slugs) != 0 {
+            if slugs[0] == "" {
+              params[name] = slugs[i]
+            } else {
+              params[name] = slugs[i-1]
+            }
+          }
+          return handler
+        }
+      }
+    }
+    if handler := route.getMatchAnyHandler(r.Method); handler != nil {
       return handler
     }
   }
@@ -217,13 +237,14 @@ pathLoop:
     }
     ro := route.routes[slug]
     if ro == nil {
-      for _, route := range route.routes {
-        if route.param && route.methods.HasOrAll(r.Method) {
-          params[route.name] = slug
+      for _, ro := range route.routes {
+        if ro.param && ro.methods.HasOrAll(r.Method) {
+          params[ro.name] = slug
+          route = ro
           continue pathLoop
         }
       }
-      if handler := route.getParentMatch(r.Method); handler != nil {
+      if handler := route.getParentMatch(r, params); handler != nil {
         handler(newContext(w, r, params))
         return
       }
@@ -242,7 +263,7 @@ pathLoop:
   // True if the route doesn't have an associated handler (not an endpoint)
   handler := route.getHandler(r.Method)
   if handler == nil {
-    if handler := route.getParentMatch(r.Method); handler != nil {
+    if handler := route.parent.getParentMatch(r, params); handler != nil {
       handler(newContext(w, r, params))
       return
     }
