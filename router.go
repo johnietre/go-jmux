@@ -15,25 +15,25 @@ type Handler interface {
   ServeC(*Context)
 }
 
-type HandlerFunc func(*Context)
-
-func WrapH(h http.Handler) HandlerFunc {
-  return func(c *Context) {
+func WrapH(h http.Handler) Handler {
+  return HandlerFunc(func(c *Context) {
     r := c.Request.WithContext(
       context.WithValue(c.Request.Context(), ParamsKey, c.Params),
     )
     h.ServeHTTP(c.Writer, r)
-  }
+  })
 }
 
-func WrapF(f func(http.ResponseWriter, *http.Request)) HandlerFunc {
-  return func(c *Context) {
+func WrapF(f func(http.ResponseWriter, *http.Request)) Handler {
+  return HandlerFunc(func(c *Context) {
     r := c.Request.WithContext(
       context.WithValue(c.Request.Context(), ParamsKey, c.Params),
     )
     f(c.Writer, r)
-  }
+  })
 }
+
+type HandlerFunc func(*Context)
 
 func (h HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
   h(newContext(w, r, make(map[string]string)))
@@ -48,9 +48,9 @@ type Route struct {
   param bool
   methods Methods
   // Used to match child routes that failed to match
-  matchAny map[string]HandlerFunc
+  matchAny map[string]Handler
   routes map[string]*Route
-  handlers map[string]HandlerFunc
+  handlers map[string]Handler
   parent *Route
 }
 
@@ -58,28 +58,32 @@ func (route *Route) MatchAny(methods Methods) {
   route.HandleAny(methods, nil)
 }
 
-func (route *Route) HandleAny(methods Methods, f HandlerFunc) {
+func (route *Route) HandleAny(methods Methods, h Handler) {
   for method := range methods {
-    route.matchAny[method] = f
+    route.matchAny[method] = h
   }
 }
 
-func (route *Route) getHandler(method string) HandlerFunc {
-  f := route.handlers[method]
-  if f == nil {
+func (route *Route) HandleAnyFunc(methods Methods, f HandlerFunc) {
+  route.HandleAny(methods, f)
+}
+
+func (route *Route) getHandler(method string) Handler {
+  h := route.handlers[method]
+  if h == nil {
     return route.handlers["*"]
   }
-  return f
+  return h
 }
 
-func (route *Route) getMatchAnyHandler(method string) HandlerFunc {
-  f, ok := route.matchAny[method]
-  if ok && f != nil {
-    return f
+func (route *Route) getMatchAnyHandler(method string) Handler {
+  h, ok := route.matchAny[method]
+  if ok && h != nil {
+    return h
   }
-  f, okAll := route.matchAny["*"]
-  if okAll && f != nil {
-    return f
+  h, okAll := route.matchAny["*"]
+  if okAll && h != nil {
+    return h
   }
   if !ok && !okAll {
     return nil
@@ -87,7 +91,7 @@ func (route *Route) getMatchAnyHandler(method string) HandlerFunc {
   return route.getHandler(method)
 }
 
-func (route *Route) getParentMatch(method string) HandlerFunc {
+func (route *Route) getParentMatch(method string) Handler {
   for ; route != nil; route = route.parent {
     if handler := route.getMatchAnyHandler(method); handler != nil {
       return handler
@@ -96,10 +100,10 @@ func (route *Route) getParentMatch(method string) HandlerFunc {
   return nil
 }
 
-func (route *Route) handleFunc(pattern string, methods Methods, f HandlerFunc) *Route {
+func (route *Route) handle(pattern string, methods Methods, h Handler) *Route {
   if pattern == "" {
     for method := range methods {
-      route.handlers[method] = f
+      route.handlers[method] = h
     }
     return route
   }
@@ -121,9 +125,9 @@ func (route *Route) handleFunc(pattern string, methods Methods, f HandlerFunc) *
       name: slug,
       param: param,
       methods: CopyMethods(methods),
-      matchAny: make(map[string]HandlerFunc),
+      matchAny: make(map[string]Handler),
       routes: make(map[string]*Route),
-      handlers: make(map[string]HandlerFunc),
+      handlers: make(map[string]Handler),
       parent: route,
     }
     route.routes[slug] = r
@@ -131,35 +135,35 @@ func (route *Route) handleFunc(pattern string, methods Methods, f HandlerFunc) *
     r.methods.CopyFrom(methods)
   }
   if l == len(pattern) {
-    return r.handleFunc("", methods, f)
+    return r.handle("", methods, h)
   }
-  return r.handleFunc(pattern[l+1:], methods, f)
+  return r.handle(pattern[l+1:], methods, h)
 }
 
 type Router struct {
   base *Route
-  // map[method]HandlerFunc
-  defaultHandlers map[string]HandlerFunc
+  // map[method]Handler
+  defaultHandlers map[string]Handler
 }
 
 func NewRouter() *Router {
   return &Router{
     base: &Route{
       methods: make(Methods),
-      matchAny: make(map[string]HandlerFunc),
+      matchAny: make(map[string]Handler),
       routes: make(map[string]*Route),
-      handlers: make(map[string]HandlerFunc),
+      handlers: make(map[string]Handler),
     },
-    defaultHandlers: make(map[string]HandlerFunc),
+    defaultHandlers: make(map[string]Handler),
   }
 }
 
-func (router *Router) HandleFunc(pattern string, methods Methods, f HandlerFunc) *Route {
+func (router *Router) Handle(pattern string, methods Methods, h Handler) *Route {
   if pattern == "" {
     return nil
   } else if pattern == "/" {
     for method := range methods {
-      router.base.handlers[method] = f
+      router.base.handlers[method] = h
     }
     router.base.methods.CopyFrom(methods)
     return router.base
@@ -170,41 +174,69 @@ func (router *Router) HandleFunc(pattern string, methods Methods, f HandlerFunc)
   if l1 := len(pattern) - 1; pattern[l1] == '/' {
     pattern = pattern[:l1]
   }
-  return router.base.handleFunc(pattern, methods, f)
+  return router.base.handle(pattern, methods, h)
 }
 
-func (router *Router) Get(pattern string, f HandlerFunc) *Route {
+func (router *Router) Get(pattern string, h Handler) *Route {
+  return router.Handle(pattern, MethodsGet(), h)
+}
+
+func (router *Router) Post(pattern string, h Handler) *Route {
+  return router.Handle(pattern, MethodsPost(), h)
+}
+
+func (router *Router) Put(pattern string, h Handler) *Route {
+  return router.Handle(pattern, MethodsPut(), h)
+}
+
+func (router *Router) Delete(pattern string, h Handler) *Route {
+  return router.Handle(pattern, MethodsDelete(), h)
+}
+
+func (router *Router) All(pattern string, h Handler) *Route {
+  return router.Handle(pattern, MethodsAll(), h)
+}
+
+func (router *Router) Default(methods Methods, h Handler) {
+  for method := range methods {
+    router.defaultHandlers[method] = h
+  }
+}
+
+func (router *Router) HandleFunc(pattern string, methods Methods, f HandlerFunc) *Route {
+  return router.Handle(pattern, methods, f)
+}
+
+func (router *Router) GetFunc(pattern string, f HandlerFunc) *Route {
   return router.HandleFunc(pattern, MethodsGet(), f)
 }
 
-func (router *Router) Post(pattern string, f HandlerFunc) *Route {
+func (router *Router) PostFunc(pattern string, f HandlerFunc) *Route {
   return router.HandleFunc(pattern, MethodsPost(), f)
 }
 
-func (router *Router) Put(pattern string, f HandlerFunc) *Route {
+func (router *Router) PutFunc(pattern string, f HandlerFunc) *Route {
   return router.HandleFunc(pattern, MethodsPut(), f)
 }
 
-func (router *Router) Delete(pattern string, f HandlerFunc) *Route {
+func (router *Router) DeleteFunc(pattern string, f HandlerFunc) *Route {
   return router.HandleFunc(pattern, MethodsDelete(), f)
 }
 
-func (router *Router) All(pattern string, f HandlerFunc) *Route {
+func (router *Router) AllFunc(pattern string, f HandlerFunc) *Route {
   return router.HandleFunc(pattern, MethodsAll(), f)
 }
 
-func (router *Router) Default(methods Methods, f HandlerFunc) {
-  for method := range methods {
-    router.defaultHandlers[method] = f
-  }
+func (router *Router) DefaultFunc(methods Methods, f HandlerFunc) {
+  router.Default(methods, f)
 }
 
-func (router *Router) getDefaultHandler(method string) HandlerFunc {
-  f := router.defaultHandlers[method]
-  if f == nil {
+func (router *Router) getDefaultHandler(method string) Handler {
+  h := router.defaultHandlers[method]
+  if h == nil {
     return router.defaultHandlers["*"]
   }
-  return f
+  return h
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +264,7 @@ pathLoop:
         }
       }
       if handler := route.getParentMatch(r.Method); handler != nil {
-        handler(newContext(w, r, params))
+        handler.ServeC(newContext(w, r, params))
         return
       }
       router.serveDefault(w, r)
@@ -251,13 +283,13 @@ pathLoop:
   handler := route.getHandler(r.Method)
   if handler == nil {
     if handler := route.getParentMatch(r.Method); handler != nil {
-      handler(newContext(w, r, params))
+      handler.ServeC(newContext(w, r, params))
       return
     }
     router.serveDefault(w, r)
     return
   }
-  handler(newContext(w, r, params))
+  handler.ServeC(newContext(w, r, params))
 }
 
 // TODO: Check to make sure things work
@@ -271,11 +303,7 @@ func (router *Router) serveDefault(w http.ResponseWriter, r *http.Request) {
     w.WriteHeader(http.StatusNotFound)
     return
   }
-  handler(&Context{
-    Request: r,
-    Writer: w,
-    Params: make(map[string]string),
-  })
+  handler.ServeC(newContext(w, r, make(map[string]string)))
 }
 
 func nextSlug(path string) int {
