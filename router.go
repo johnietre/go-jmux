@@ -11,6 +11,10 @@ type contextKeyType string
 
 const ParamsKey contextKeyType = "jmuxkey"
 
+type Handler interface {
+  ServeC(*Context)
+}
+
 type HandlerFunc func(*Context)
 
 func WrapH(h http.Handler) HandlerFunc {
@@ -33,6 +37,10 @@ func WrapF(f func(http.ResponseWriter, *http.Request)) HandlerFunc {
 
 func (h HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
   h(newContext(w, r, make(map[string]string)))
+}
+
+func (h HandlerFunc) ServeC(c *Context) {
+  h(c)
 }
 
 type Route struct {
@@ -250,6 +258,11 @@ pathLoop:
     return
   }
   handler(newContext(w, r, params))
+}
+
+// TODO: Check to make sure things work
+func (router *Router) ServeC(c *Context) {
+  WrapH(router).ServeC(c)
 }
 
 func (router *Router) serveDefault(w http.ResponseWriter, r *http.Request) {
