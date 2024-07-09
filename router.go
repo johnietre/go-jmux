@@ -21,10 +21,7 @@ type Handler interface {
 // ToHTTP converts a jmux Handler to an http.Handler.
 func ToHTTP(h Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeC(&Context{
-			Request: r,
-			Writer:  w,
-		})
+		h.ServeC(newContext(w, r, make(map[string]string)))
 	})
 }
 
