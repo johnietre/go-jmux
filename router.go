@@ -9,7 +9,8 @@ import (
 
 type contextKeyType string
 
-// ParamsKey is the key used to access the paramters in a context.
+// ParamsKey is the key used to access the paramters in an http.Request's
+// context when an http Handler has been wrapped as a jmux Handler.
 const ParamsKey contextKeyType = "jmuxkey"
 
 // Handler handles a request.
@@ -390,6 +391,17 @@ func (c *Context) WriteHeader(statusCode int) {
 // writer.
 func (c *Context) WriteJSON(what any) error {
 	return json.NewEncoder(c.Writer).Encode(what)
+}
+
+// WriteMarshaledJSON first marshals the given argument into a byte array, then
+// writes the bytes, assuming no error occurred in marshaling.
+func (c *Context) WriteMarshaledJSON(what any) error {
+	b, err := json.Marshal(what)
+	if err != nil {
+		return err
+	}
+	_, err = c.Write(b)
+	return err
 }
 
 // writeError writes the given error code and message to the underlying
