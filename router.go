@@ -77,12 +77,24 @@ type Route struct {
 	parent   *Route
 }
 
-// MatchAny allows all of the given methods for the route.
+// MatchAny allows all of the given methods for the route. This makes the route
+// a catch all for any requests that matched this but failed to match children.
+// E.g., if this route is 3 in the tree 1/2/3/4/5 and 1/2/3/4/6 is requested,
+// as long as 4 doesn't match, it will fall back to this (assuming the method
+// is accepted).
+// The failed matches use the handler that is associated with the route.
 func (route *Route) MatchAny(methods Methods) {
 	route.HandleAny(methods, nil)
 }
 
-// HandleAny uses the given handler for all of the given methods.
+// HandleAny uses the given handler for all of the given methods. This makes
+// the route a catch all for any requests that matched this but failed to match
+// children. E.g., if this route is 3 in the tree 1/2/3/4/5 and 1/2/3/4/6 is
+// requested, as long as 4 doesn't match, it will fall back to this (assuming
+// the method is accepted).
+// The failed matches use the handler passed to this function. Passing nil
+// causes them to use the route's default handler (same behavior as
+// Route.MatchAny).
 func (route *Route) HandleAny(methods Methods, h Handler) {
 	for method := range methods {
 		route.matchAny[method] = h
@@ -301,9 +313,10 @@ pathLoop:
 		}
 		ro := route.routes[slug]
 		if ro == nil {
-			for _, route := range route.routes {
-				if route.param && route.methods.HasOrAll(r.Method) {
-					params[route.name] = slug
+			for _, ro := range route.routes {
+				if ro.param && ro.methods.HasOrAll(r.Method) {
+					params[ro.name] = slug
+					route = ro
 					continue pathLoop
 				}
 			}
