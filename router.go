@@ -83,8 +83,10 @@ type Route struct {
 // as long as 4 doesn't match, it will fall back to this (assuming the method
 // is accepted).
 // The failed matches use the handler that is associated with the route.
-func (route *Route) MatchAny(methods Methods) {
-	route.HandleAny(methods, nil)
+// This function calls Route.MatchAny(methods, nil) under the hood.
+// Returns the calling route.
+func (route *Route) MatchAny(methods Methods) *Route {
+	return route.HandleAny(methods, nil)
 }
 
 // HandleAny uses the given handler for all of the given methods. This makes
@@ -95,15 +97,27 @@ func (route *Route) MatchAny(methods Methods) {
 // The failed matches use the handler passed to this function. Passing nil
 // causes them to use the route's default handler (same behavior as
 // Route.MatchAny).
-func (route *Route) HandleAny(methods Methods, h Handler) {
+// Routes with a trailing slash get precendence in the fallback matching over
+// those without. E.g., between "/slug1" and "/slug1/", "/slug1/" takes
+// precendence when matching something like "/slug1/slug2". Additionally, this
+// causes the following to be happen: with a route of "/slug1/" that matches
+// any (but not a route of "/slug1"), a request for "/slug1" will fall back to
+// "/slug1/". This inverse is not true, however, meaning that with a route of
+// "/slug1" that matches any (but not a route of "/slug1/"), a request for
+// "/slug1/" will not fall back to "/slug1".
+// Returns the calling route.
+func (route *Route) HandleAny(methods Methods, h Handler) *Route {
 	for method := range methods {
 		route.matchAny[method] = h
 	}
+	return route
 }
 
 // HandleAnyFunc uses the given hander func for all of the given methods.
-func (route *Route) HandleAnyFunc(methods Methods, f HandlerFunc) {
-	route.HandleAny(methods, f)
+// Returns the calling route.
+// Returns the calling route.
+func (route *Route) HandleAnyFunc(methods Methods, f HandlerFunc) *Route {
+	return route.HandleAny(methods, f)
 }
 
 func (route *Route) getHandler(method string) Handler {
@@ -130,6 +144,19 @@ func (route *Route) getMatchAnyHandler(method string) Handler {
 }
 
 func (route *Route) getParentMatch(method string) Handler {
+	if route.name != "/" {
+		if r := route.routes["/"]; r != nil {
+			h := r.getMatchAnyHandler(method)
+			if h != nil {
+				return h
+			}
+		}
+	} else {
+		route = route.parent
+		if route != nil {
+			route = route.parent
+		}
+	}
 	for ; route != nil; route = route.parent {
 		if handler := route.getMatchAnyHandler(method); handler != nil {
 			return handler
@@ -138,18 +165,25 @@ func (route *Route) getParentMatch(method string) Handler {
 	return nil
 }
 
-func (route *Route) handle(pattern string, methods Methods, h Handler) *Route {
+func (route *Route) getRoute(pattern string, methods Methods, h Handler) *Route {
 	if pattern == "" {
 		for method := range methods {
 			route.handlers[method] = h
 		}
 		return route
 	}
+	if pattern[0] == '/' {
+		pattern = pattern[1:]
+	}
+	lp := len(pattern)
 	l := nextSlug(pattern)
 	if l == -1 {
-		l = len(pattern)
+		l = lp
 	}
 	slug, param := pattern[:l], false
+	if slug == "" {
+		slug = "/"
+	}
 	if slug[0] == '{' {
 		if slug[l-1] != '}' {
 			panic("missing closing brace in pattern: " + pattern)
@@ -172,10 +206,17 @@ func (route *Route) handle(pattern string, methods Methods, h Handler) *Route {
 	} else {
 		r.methods.CopyFrom(methods)
 	}
-	if l == len(pattern) {
-		return r.handle("", methods, h)
+	if l == lp {
+		return r.getRoute("", methods, h)
 	}
-	return r.handle(pattern[l+1:], methods, h)
+	/*
+	  // Ends with slash
+	  if pattern[lp-1] == '/' {
+	    return r.getRoute(pattern[l+1:]+"/", methods, h)
+	  }
+	*/
+	//return r.getRoute(pattern[l+1:], methods, h)
+	return r.getRoute(pattern[l:], methods, h)
 }
 
 // Router is a router.
@@ -183,6 +224,7 @@ type Router struct {
 	base *Route
 	// map[method]Handler
 	defaultHandlers map[string]Handler
+	notFoundHandler Handler
 }
 
 // NewRouter creates a new router.
@@ -195,12 +237,26 @@ func NewRouter() *Router {
 			handlers: make(map[string]Handler),
 		},
 		defaultHandlers: make(map[string]Handler),
+		notFoundHandler: HandlerFunc(func(c *Context) {
+			c.WriteHeader(http.StatusNotFound)
+		}),
 	}
 }
 
 // Handle handles the given pattern, allowing the given methods, and using the
-// given handler.
+// given handler. If the pattern is an empty string (""), nothing is done and
+// nil is returned.
 func (router *Router) Handle(pattern string, methods Methods, h Handler) *Route {
+	// NOTE: If adding the functionality below, make sure to move the
+	// documentation to the appropriate place.
+
+	/* DOCUMENTATION
+	// A pattern with a trailing slash ('/') that is now the base path (just "/")
+	// is equivalent to calling MatchAny(methods) on the resulting Route (e.g.,
+	// calling Router.Handle("/static/", MethodsGet, HANDLER) is the same as
+	// Router.Handle("/static", MethodsGet, HANDLER).MatchAny(MethodsGet)).
+	*/
+
 	if pattern == "" {
 		return nil
 	} else if pattern == "/" {
@@ -213,10 +269,12 @@ func (router *Router) Handle(pattern string, methods Methods, h Handler) *Route 
 	if pattern[0] == '/' {
 		pattern = pattern[1:]
 	}
-	if l1 := len(pattern) - 1; pattern[l1] == '/' {
-		pattern = pattern[:l1]
-	}
-	return router.base.handle(pattern, methods, h)
+	/*
+		if l1 := len(pattern) - 1; pattern[l1] == '/' {
+			pattern = pattern[:l1]
+		}
+	*/
+	return router.base.getRoute(pattern, methods, h)
 }
 
 // Get handles the given pattern with the given handler for GET requests.
@@ -251,39 +309,57 @@ func (router *Router) Default(methods Methods, h Handler) {
 	}
 }
 
+// NotFound sets the handler for when a request results in a NotFound. It is
+// not required for the handler to actually handle the request with a not found
+// response. The default behavior is to just write a NotFound (404) status
+// code.
+func (router *Router) NotFound(h Handler) {
+	if h == nil {
+		h = HandlerFunc(func(c *Context) {
+			c.WriteHeader(http.StatusNotFound)
+		})
+	}
+	router.notFoundHandler = h
+}
+
 // HandleFunc is the same as Handle but takes a HandlerFunc.
 func (router *Router) HandleFunc(pattern string, methods Methods, f HandlerFunc) *Route {
 	return router.Handle(pattern, methods, f)
 }
 
-// GetFunc is the same as Get but takes a GetrFunc.
+// GetFunc is the same as Get but takes a HandlerFunc.
 func (router *Router) GetFunc(pattern string, f HandlerFunc) *Route {
 	return router.HandleFunc(pattern, MethodsGet(), f)
 }
 
-// PostFunc is the same as Post but takes a PostrFunc.
+// PostFunc is the same as Post but takes a HandlerFunc.
 func (router *Router) PostFunc(pattern string, f HandlerFunc) *Route {
 	return router.HandleFunc(pattern, MethodsPost(), f)
 }
 
-// PutFunc is the same as Put but takes a PutrFunc.
+// PutFunc is the same as Put but takes a HandlerFunc.
 func (router *Router) PutFunc(pattern string, f HandlerFunc) *Route {
 	return router.HandleFunc(pattern, MethodsPut(), f)
 }
 
-// DeleteFunc is the same as Delete but takes a DeleterFunc.
+// DeleteFunc is the same as Delete but takes a HandlerFunc.
 func (router *Router) DeleteFunc(pattern string, f HandlerFunc) *Route {
 	return router.HandleFunc(pattern, MethodsDelete(), f)
 }
 
-// AllFunc is the same as All but takes a AllrFunc.
+// AllFunc is the same as All but takes a HandlerFunc.
 func (router *Router) AllFunc(pattern string, f HandlerFunc) *Route {
 	return router.HandleFunc(pattern, MethodsAll(), f)
 }
 
-// DefaultFunc is the same as Default but takes a DefaultrFunc.
+// DefaultFunc is the same as Default but takes a HandlerFunc.
 func (router *Router) DefaultFunc(methods Methods, f HandlerFunc) {
 	router.Default(methods, f)
+}
+
+// NotFoundFunc is the same as NotFound but takes a HandlerFunc.
+func (router *Router) NotFoundFunc(f HandlerFunc) {
+	router.NotFound(f)
 }
 
 func (router *Router) getDefaultHandler(method string) Handler {
@@ -297,9 +373,12 @@ func (router *Router) getDefaultHandler(method string) Handler {
 // ServeHTTP implements the ServeHTTP function for the http.Handler interface.
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	urlPath := r.URL.Path
-	if len(urlPath) != 0 && urlPath[0] == '/' {
+	upl := len(urlPath)
+	if upl != 0 && urlPath[0] == '/' {
 		urlPath = urlPath[1:]
+		upl--
 	}
+	trailingSlash := upl != 0 && urlPath[upl-1] == '/'
 	route, params := router.base, make(map[string]string)
 pathLoop:
 	for l := nextSlug(urlPath); urlPath != ""; l = nextSlug(urlPath) {
@@ -307,10 +386,17 @@ pathLoop:
 		if l != -1 {
 			slug = urlPath[:l]
 			urlPath = urlPath[l+1:]
+			if trailingSlash && l != 0 && urlPath == "" {
+				urlPath = "/"
+			}
 		} else {
 			slug = urlPath
 			urlPath = ""
 		}
+		if slug == "" {
+			slug = "/"
+		}
+
 		ro := route.routes[slug]
 		if ro == nil {
 			for _, ro := range route.routes {
@@ -320,9 +406,14 @@ pathLoop:
 					continue pathLoop
 				}
 			}
-			if handler := route.getParentMatch(r.Method); handler != nil {
-				handler.ServeC(newContext(w, r, params))
-				return
+			if slug == "/" {
+				route = route.parent
+			}
+			if route != nil {
+				if handler := route.getParentMatch(r.Method); handler != nil {
+					handler.ServeC(newContext(w, r, params))
+					return
+				}
 			}
 			router.serveDefault(w, r)
 			return
@@ -358,7 +449,7 @@ func (router *Router) ServeC(c *Context) {
 func (router *Router) serveDefault(w http.ResponseWriter, r *http.Request) {
 	handler := router.getDefaultHandler(r.Method)
 	if handler == nil {
-		w.WriteHeader(http.StatusNotFound)
+		ToHTTP(router.notFoundHandler).ServeHTTP(w, r)
 		return
 	}
 	handler.ServeC(newContext(w, r, make(map[string]string)))
@@ -412,6 +503,12 @@ func (c *Context) WriteMarshaledJSON(what any) error {
 	}
 	_, err = c.Write(b)
 	return err
+}
+
+// WriteFile writes the named file to the response writer (uses
+// http.ServeFile).
+func (c *Context) WriteFile(name string) {
+	http.ServeFile(c.Writer, c.Request, name)
 }
 
 // writeError writes the given error code and message to the underlying
