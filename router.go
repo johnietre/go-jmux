@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	urlpkg "net/url"
 	"strings"
 )
 
@@ -517,10 +518,115 @@ func (c *Context) WriteError(code int, msg string) {
 	http.Error(c.Writer, msg, code)
 }
 
+// BadRequest write a BadRequest response with the given message.
+func (c *Context) BadRequest(msg string) {
+	if msg != "" {
+		c.WriteError(http.StatusBadRequest, msg)
+	} else {
+		c.WriteHeader(http.StatusBadRequest)
+	}
+}
+
+// Unauthorized write a Unauthorized response with the given message.
+func (c *Context) Unauthorized(msg string) {
+	if msg != "" {
+		c.WriteError(http.StatusUnauthorized, msg)
+	} else {
+		c.WriteHeader(http.StatusUnauthorized)
+	}
+}
+
+// InternalServerError write a InternalServerError response with the given
+// message.
+func (c *Context) InternalServerError(msg string) {
+	if msg != "" {
+		c.WriteError(http.StatusInternalServerError, msg)
+	} else {
+		c.WriteHeader(http.StatusInternalServerError)
+	}
+}
+
 // ReadBodyJSON reads the body into the given object (should be a pointer).
 func (c *Context) ReadBodyJSON(to any) error {
 	defer c.Request.Body.Close()
 	return json.NewDecoder(c.Request.Body).Decode(to)
+}
+
+// Context is an alias for `c.Request.Context()`.
+func (c *Context) Context() context.Context {
+	return c.Request.Context()
+}
+
+// WithContext is an alias for `c.Request = c.Request.WithContext(ctx)`.
+func (c *Context) WithContext(ctx context.Context) {
+	c.Request = c.Request.WithContext(ctx)
+}
+
+// WithContextValue is an alias for
+// `c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), key, val))`.
+func (c *Context) WithContextValue(key, val any) {
+	c.Request = c.Request.WithContext(
+		context.WithValue(c.Request.Context(), key, val),
+	)
+}
+
+// Cookie is an alias for `c.Request.Cookie(name)`.
+func (c *Context) Cookie(name string) (*http.Cookie, error) {
+	return c.Request.Cookie(name)
+}
+
+// Cookie is an alias for `c.Request.Cookies()`.
+func (c *Context) Cookies() []*http.Cookie {
+	return c.Request.Cookies()
+}
+
+// SetCookie is an alias for `http.SetCookie(c.Writer, cookie)`.
+func (c *Context) SetCookie(cookie *http.Cookie) {
+	http.SetCookie(c.Writer, cookie)
+}
+
+// URL returns the Request's URL.
+func (c *Context) URL() *urlpkg.URL {
+	return c.Request.URL
+}
+
+// Path returns the path of the Request's URL.
+func (c *Context) Path() string {
+	return c.Request.URL.Path
+}
+
+// ReqHeader returns the headers for the Request.
+func (c *Context) ReqHeader() http.Header {
+	return c.Request.Header
+}
+
+// RespHeader returns the headers for the ResponseWriter.
+// An alias for `c.Writer.Header()`.
+func (c *Context) RespHeader() http.Header {
+	return c.Writer.Header()
+}
+
+// Query returns the query of the Request's URL.
+// An alias for `c.Request.URL.Query()`.
+func (c *Context) Query() urlpkg.Values {
+	return c.Request.URL.Query()
+}
+
+// BasicAuth is an alias for `c.Request.BasicAuth()`.
+func (c *Context) BasicAuth() (username, password string, ok bool) {
+	return c.Request.BasicAuth()
+}
+
+// BearerAuth returns the value of a bearer authorization header, returning
+// true if it was a valid header value. This only means that it was prefixed
+// with "Bearer ". The string "Bearer " is valid by this standard.
+func (c *Context) BearerAuth() (string, bool) {
+	const start = len("Bearer ")
+	auth := c.Request.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return "", false
+	}
+	return auth[start:], true
 }
 
 // Unit is just an alias for an empty struct.
