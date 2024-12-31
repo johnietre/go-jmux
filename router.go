@@ -506,6 +506,26 @@ func (c *Context) WriteMarshaledJSON(what any) error {
 	return err
 }
 
+// WriteStatusJSON writes the given argument as JSON to the underlying response
+// writer after writing the given status code.
+func (c *Context) WriteStatusJSON(code int, what any) error {
+	c.WriteHeader(code)
+	return json.NewEncoder(c.Writer).Encode(what)
+}
+
+// WriteStatusMarshaledJSON first marshals the given argument into a byte
+// array, then writes given status code and the bytes, assuming no error
+// occurred in marshaling (otherwise, neither code nor JSON will be sent).
+func (c *Context) WriteStatusMarshaledJSON(code int, what any) error {
+	b, err := json.Marshal(what)
+	if err != nil {
+		return err
+	}
+	c.WriteHeader(code)
+	_, err = c.Write(b)
+	return err
+}
+
 // WriteFile writes the named file to the response writer (uses
 // http.ServeFile).
 func (c *Context) WriteFile(name string) {
